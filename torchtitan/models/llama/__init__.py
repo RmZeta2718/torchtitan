@@ -39,4 +39,14 @@ llama3_configs = {
         multiple_of=4096,
         rope_theta=500000,
     ),
+    "113M": ModelArgs(
+        dim=576,
+        n_layers=24,
+        n_heads=9,
+        n_kv_heads=3,
+        ffn_dim_multiplier=2.667,
+        multiple_of=512,
+        rope_theta=10000,
+        vocab_size=49152,
+    ),
 }

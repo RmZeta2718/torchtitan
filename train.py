@@ -9,7 +9,6 @@ import time
 from datetime import timedelta
 
 import torch
-
 from torch.distributed.elastic.multiprocessing.errors import record
 
 from torchtitan import utils
@@ -22,9 +21,9 @@ from torchtitan.metrics import build_device_memory_monitor, build_metric_logger
 from torchtitan.models import model_name_to_cls, model_name_to_tokenizer, models_config
 from torchtitan.optimizer import build_lr_schedulers, build_optimizers
 from torchtitan.parallelisms import (
+    ParallelDims,
     models_parallelize_fns,
     models_pipelining_fns,
-    ParallelDims,
 )
 from torchtitan.profiling import maybe_enable_memory_snapshot, maybe_enable_profiling
 from torchtitan.utils import device_module, device_type
@@ -76,14 +75,13 @@ def main(job_config: JobConfig):
         pp_mesh = world_mesh["pp"]
 
     # Set random seed, and maybe enable deterministic mode (mainly for debugging, expect perf loss)
-    utils.set_determinism(
-        world_mesh, device, job_config.training.seed, job_config.training.deterministic
-    )
+    utils.set_determinism(world_mesh, device, job_config.training.seed, job_config.training.deterministic)
     model_name = job_config.model.name
 
     # build tokenizer
-    tokenizer_type = model_name_to_tokenizer[model_name]
-    tokenizer = build_tokenizer(tokenizer_type, job_config.model.tokenizer_path)
+    # tokenizer_type = model_name_to_tokenizer[model_name]
+    # tokenizer = build_tokenizer(tokenizer_type, job_config.model.tokenizer_path)
+    tokenizer = None
     # build dataloader
     data_loader = build_hf_data_loader(
         job_config.training.dataset,
@@ -103,7 +101,7 @@ def main(job_config: JobConfig):
     # 2. vocab size from tokenizer
     # 3. max_seq_len base on inputs
     model_config.norm_type = job_config.model.norm_type
-    model_config.vocab_size = tokenizer.n_words
+    # model_config.vocab_size = tokenizer.n_words
     model_config.max_seq_len = job_config.training.seq_len
 
     logger.info(f"Building {model_name} {job_config.model.flavor} with {model_config}")
@@ -129,9 +127,7 @@ def main(job_config: JobConfig):
 
     # loss function to be shared by Pipeline Parallel and SPMD training
     def loss_fn(pred, labels):
-        return torch.nn.functional.cross_entropy(
-            pred.flatten(0, 1).float(), labels.flatten(0, 1)
-        )
+        return torch.nn.functional.cross_entropy(pred.flatten(0, 1).float(), labels.flatten(0, 1))
 
     # TODO: compiling loss function causes CUDA errors, turning off for now
     # if job_config.training.compile:
@@ -201,12 +197,8 @@ def main(job_config: JobConfig):
     )
 
     if job_config.checkpoint.create_seed_checkpoint:
-        assert (
-            world_size == 1
-        ), "Must create seed checkpoint using a single device, to disable sharding"
-        assert (
-            job_config.checkpoint.enable_checkpoint
-        ), "Must enable checkpointing when creating a seed checkpoint"
+        assert world_size == 1, "Must create seed checkpoint using a single device, to disable sharding"
+        assert job_config.checkpoint.enable_checkpoint, "Must enable checkpointing when creating a seed checkpoint"
         checkpoint.save(curr_step=0, force=True)
         logger.info("Created seed checkpoint")
         return
@@ -251,9 +243,7 @@ def main(job_config: JobConfig):
     )
     with maybe_enable_profiling(
         job_config, global_step=train_state.step
-    ) as torch_profiler, maybe_enable_memory_snapshot(
-        job_config, global_step=train_state.step
-    ) as memory_profiler:
+    ) as torch_profiler, maybe_enable_memory_snapshot(job_config, global_step=train_state.step) as memory_profiler:
         while train_state.step < job_config.training.steps:
             train_state.step += 1
             gc_handler.run(train_state.step)
@@ -299,9 +289,7 @@ def main(job_config: JobConfig):
                 # accumulate losses across pipeline microbatches
                 # TODO: PP+FSDP unexpectedly puts the loss back to the CPU
                 loss = (
-                    torch.mean(torch.stack(losses)).to(device)
-                    if is_last_stage
-                    else torch.tensor([-1.0], device=device)
+                    torch.mean(torch.stack(losses)).to(device) if is_last_stage else torch.tensor([-1.0], device=device)
                 )
             else:
                 # Non-PP forward / backward
@@ -331,15 +319,8 @@ def main(job_config: JobConfig):
             float8_handler.precompute_float8_dynamic_scale_for_fsdp(model_parts)
 
             # log metrics
-            if (
-                train_state.step == 1
-                or train_state.step % job_config.metrics.log_freq == 0
-            ):
-                if (
-                    parallel_dims.dp_replicate_enabled
-                    or parallel_dims.dp_shard_enabled
-                    or parallel_dims.cp_enabled
-                ):
+            if train_state.step == 1 or train_state.step % job_config.metrics.log_freq == 0:
+                if parallel_dims.dp_replicate_enabled or parallel_dims.dp_shard_enabled or parallel_dims.cp_enabled:
                     loss = loss.detach()
                     global_avg_loss, global_max_loss = (
                         utils.dist_mean(loss, world_mesh["dp_cp"]),
@@ -356,9 +337,7 @@ def main(job_config: JobConfig):
                 time_delta = time.perf_counter() - time_last_log
 
                 # tokens per second per device, abbreviated as tps
-                tps = ntokens_since_last_log / (
-                    time_delta * parallel_dims.non_data_parallel_size
-                )
+                tps = ntokens_since_last_log / (time_delta * parallel_dims.non_data_parallel_size)
                 # model FLOPS utilization
                 # For its definition and calculation, please refer to the PaLM paper:
                 # https://arxiv.org/abs/2204.02311
@@ -401,9 +380,7 @@ def main(job_config: JobConfig):
                 time_last_log = time.perf_counter()
                 device_memory_monitor.reset_peak_stats()
 
-            checkpoint.save(
-                train_state.step, force=(train_state.step == job_config.training.steps)
-            )
+            checkpoint.save(train_state.step, force=(train_state.step == job_config.training.steps))
 
             # signal the profiler that the next profiling step has started
             if torch_profiler:

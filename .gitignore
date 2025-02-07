@@ -18,3 +18,5 @@ torchtitan/datasets/**/*.model
 *.log
 error.json
 _remote_module_non_scriptable.py
+
+tests/assets/smollm1_corpus

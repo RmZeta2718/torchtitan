@@ -6,3 +6,5 @@ tiktoken
 blobfile
 tabulate
 wandb
+datatrove
+numba
